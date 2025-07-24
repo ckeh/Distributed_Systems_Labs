@@ -10,6 +10,7 @@
 #include <vector>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 #include "lang/verify.h"
 
 // must be >= 2
@@ -154,6 +155,7 @@ main(int argc, char *argv[])
     srandom(getpid());
 
     //jsl_set_debug(2);
+    jsl_set_debug(JSL_DBG_4);
 
     if(argc < 2) {
       fprintf(stderr, "Usage: %s [host:]port [test]\n", argv[0]);
@@ -169,7 +171,7 @@ main(int argc, char *argv[])
         exit(1);
       }
     }
-
+    
     VERIFY(pthread_mutex_init(&count_mutex, NULL) == 0);
     printf("simple lock client\n");
     for (int i = 0; i < nt; i++) lc[i] = new lock_client(dst);
