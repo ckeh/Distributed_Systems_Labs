@@ -155,7 +155,7 @@ main(int argc, char *argv[])
     srandom(getpid());
 
     //jsl_set_debug(2);
-    jsl_set_debug(JSL_DBG_4);
+    // jsl_set_debug(JSL_DBG_4);
 
     if(argc < 2) {
       fprintf(stderr, "Usage: %s [host:]port [test]\n", argv[0]);

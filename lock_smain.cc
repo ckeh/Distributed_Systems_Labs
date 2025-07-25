@@ -29,7 +29,7 @@ main(int argc, char *argv[])
     count = atoi(count_env);
   }
 
-  jsl_set_debug(4);
+  // jsl_set_debug(JSL_DBG_4);
 
 #ifndef RSM
   lock_server ls;

@@ -75,6 +75,7 @@
 #include "jsl_log.h"
 #include "gettime.h"
 #include "lang/verify.h"
+#include <climits>
 
 const rpcc::TO rpcc::to_max = { 120000 };
 const rpcc::TO rpcc::to_min = { 1000 };
@@ -662,60 +663,53 @@ rpcs::rpcstate_t
 rpcs::checkduplicate_and_update(unsigned int clt_nonce, unsigned int xid,
 		unsigned int xid_rep, char **b, int *sz)
 {
+	ScopedLock rwl(&reply_window_m_);
+
 	jsl_log(JSL_DBG_3, "ckeh:rpcs::checkduplicate_and_update clt_nonce:%d, xid:%d, xid_rep:%d, b:%s, sz:%d\n", clt_nonce, xid, xid_rep, *b, *sz);
 	rpcs::rpcstate_t state = NEW;
 
-	ScopedLock rwl(&reply_window_m_);
-	std::list<reply_t>* replies = &reply_window_[clt_nonce];
+	std::list<reply_t>& replies = reply_window_[clt_nonce];
 
-	reply_t* entry = nullptr;
 
-	if(replies->size() != 0){
+	if(replies.size() != 0){
 		jsl_log(JSL_DBG_3, "ckeh:rpcs::checkduplicate_and_update replies at clt_nonce:%d\n", clt_nonce);
 	}
-	std::map<unsigned int, unsigned int> temp;
-	for(reply_t& r : *replies){
-		if(r.xid == xid && xid > xid_rep){
 
-			if(r.cb_present){
-				entry = &r;
-			} else {
-				jsl_log(JSL_DBG_3, "ckeh:rpcs::checkduplicate_and_update returing state:%d\n", INPROGRESS);
-				return INPROGRESS;
+	if(replies.size() != 0){
+		unsigned int min_xid = INT_MAX;
+		auto it = replies.begin();
+		while(it != replies.end()){
+			jsl_log(JSL_DBG_3, "\tr.xid:%d, r.buf:%s, r.cb_present:%d, sz:%d\n", it->xid, it->buf, it->cb_present, it->sz);
+
+			if(it->xid < xid_rep){
+				if(it->buf) free(it->buf);
+				it = replies.erase(it);
+				continue;
+			} 
+			if(it->xid == xid){
+				if(it->cb_present){
+					*b = it->buf;
+					*sz = it->sz;
+					jsl_log(JSL_DBG_3, "ckeh:rpcs::checkduplicate_and_update returing state:%d, b:%s, sz:%d\n", DONE, *b, *sz);
+					state = DONE;
+				} else {
+					jsl_log(JSL_DBG_3, "ckeh:rpcs::checkduplicate_and_update returing state:%d\n", INPROGRESS);
+					state = INPROGRESS;
+				}
 			}
-		}
-		temp[r.xid]++;
-		if(temp[r.xid] > 1){
-			jsl_log(JSL_DBG_2, "DUPLICATE INSERTED\n");
-		}
-		jsl_log(JSL_DBG_3, "\tr.xid:%d, r.buf:%s, r.cb_present:%d, sz:%d\n", r.xid, r.buf, r.cb_present, r.sz);
-	}
+			min_xid = std::min(it->xid, min_xid);
 
-	if((replies->size() == 0 || entry == nullptr) && xid <= xid_rep){
-		state = NEW;
-	} else {
-		std::list<reply_t>::iterator removed = std::remove_if(replies->begin(), replies->end(), [xid_rep](reply_t r){
-			return r.xid <= xid_rep;
-		});
-		for(auto re = removed; re != replies->end(); re++){
-			free(re->buf);
+			it++;
 		}
-		replies->erase(removed, replies->end());
-
-		if(entry != nullptr && xid > xid_rep){
-			b = &entry->buf;
-			sz = &entry->sz;
-			jsl_log(JSL_DBG_3, "ckeh:rpcs::checkduplicate_and_update returing state:%d, b:%s, sz:%d\n", DONE, *b, *sz);
-
-			return DONE;
-		}
-
-		if(xid <= xid_rep){
+		if(xid < min_xid && min_xid != INT_MAX){
 			state = FORGOTTEN;
 		} 
-	}
-	replies->push_back(reply_t(xid));
 
+		if(state != NEW){
+			return state;
+		}
+	}
+	replies.push_back(reply_t(xid));
 	jsl_log(JSL_DBG_3, "ckeh:rpcs::checkduplicate_and_update returing state:%d\n", state);
         // You fill this in for Lab 1.
 	return state;
