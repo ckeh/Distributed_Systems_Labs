@@ -26,7 +26,7 @@ int extent_server::put(extent_protocol::extentid_t id, std::string buf, int &)
 
   time_t t;
   time(&t);
-  printf("buf: %s\n", (void*)buf.c_str());
+  unsigned int time = (unsigned int)t;
 
   if(extents_map.find(id) != extents_map.end()){
     extents_map[id].second.mtime = t;
@@ -35,7 +35,7 @@ int extent_server::put(extent_protocol::extentid_t id, std::string buf, int &)
     extents_map[id].second.size = buf.size();
 
   } else {
-    extent_protocol::attr at = {t, t, t, buf.size()};
+    extent_protocol::attr at = {time, time, time, (unsigned int)buf.size()};
     extents_map[id] = {buf, at};
 
   }

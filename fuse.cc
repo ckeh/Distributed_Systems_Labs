@@ -247,7 +247,7 @@ fuseserver_createhelper(fuse_ino_t parent, const char *name,
   }
   struct stat st;
   yfs_client::inum new_file;
-  if(yfs->create(parent, name, new_file) == yfs_client::OK){
+  if(yfs->create(parent, name, new_file, true) == yfs_client::OK){
     getattr(new_file, st);
     e->attr = st;
     e->ino = new_file;
@@ -435,7 +435,16 @@ fuseserver_mkdir(fuse_req_t req, fuse_ino_t parent, const char *name,
   (void) e;
 
   // You fill this in for Lab 3
-#if 0
+#if 1
+  unsigned long long int newdir;
+  int ret;
+  if((ret = yfs->create(parent, name, newdir, false)) != yfs_client::OK){
+    fuse_reply_err(req, EEXIST);
+  }
+  e.ino = newdir;
+  struct stat st;
+  getattr(newdir, st);
+  e.attr = st;
   fuse_reply_entry(req, &e);
 #else
   fuse_reply_err(req, ENOSYS);
@@ -452,11 +461,14 @@ fuseserver_mkdir(fuse_req_t req, fuse_ino_t parent, const char *name,
 void
 fuseserver_unlink(fuse_req_t req, fuse_ino_t parent, const char *name)
 {
-
+  if(yfs->unlink(parent, std::string(name)) != yfs_client::OK){
+    fuse_reply_err(req, ENOENT);
+  }
+  fuse_reply_err(req, 0);
   // You fill this in for Lab 3
   // Success:	fuse_reply_err(req, 0);
   // Not found:	fuse_reply_err(req, ENOENT);
-  fuse_reply_err(req, ENOSYS);
+  // fuse_reply_err(req, ENOSYS);
 }
 
 void
