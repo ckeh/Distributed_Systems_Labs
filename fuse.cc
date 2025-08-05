@@ -205,9 +205,11 @@ fuseserver_write(fuse_req_t req, fuse_ino_t ino,
   // You fill this in for Lab 2
 #if 1
   // Change the above line to "#if 1", and your code goes here
-  printf("ckeh:fuseserver_write: ino:%ld, size:%ld, off:%ld\n", ino, size, off);
+  printf("ckeh:fuseserver_write: ino:%ld, size:%ld, towrite:%s, off:%ld\n", ino, size, buf, off);
 
-  yfs->writefile(ino, off, size, buf);
+  if(yfs->writefile(ino, off, size, std::string(buf, size)) != yfs_client::OK){
+    fuse_reply_err(req, ENOENT);
+  }
   fuse_reply_write(req, size);
 #else
   fuse_reply_err(req, ENOSYS);
@@ -242,9 +244,9 @@ fuseserver_createhelper(fuse_ino_t parent, const char *name,
   e->entry_timeout = 0.0;
   e->generation = 0;
 
-  if(lookup(parent, name, *e) == yfs_client::OK){
-    return yfs_client::EXIST;
-  }
+  // if(lookup(parent, name, *e) == yfs_client::OK){
+  //   return yfs_client::EXIST;
+  // }
   struct stat st;
   yfs_client::inum new_file;
   if(yfs->create(parent, name, new_file, true) == yfs_client::OK){
@@ -253,9 +255,8 @@ fuseserver_createhelper(fuse_ino_t parent, const char *name,
     e->ino = new_file;
     return yfs_client::OK;
   }
-
   // You fill this in for Lab 2
-  return yfs_client::NOENT;
+  return yfs_client::EXIST;
 }
 
 void

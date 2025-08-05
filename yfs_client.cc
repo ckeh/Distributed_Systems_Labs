@@ -148,29 +148,48 @@ yfs_client::getdir(inum inum, dirinfo &din)
 
 int 
 yfs_client::create(inum parent, std::string name, inum& new_file, bool createfile){
+  int ret = OK;
+
   lc->acquire(parent);
-  inum newinum = markinum(rand(), createfile);
   std::string buf;
+  ret = ec->get(parent, buf);
+
+  if(ret != OK){
+    return ret;
+  }
+
+  std::stringstream ss(buf);
+  struct dirent ent;
+
+  while(ss >> ent.inum >> ent.name){
+    if(ent.name.compare(name) == 0){
+      lc->release(parent);
+      return yfs_client::EXIST;
+    }
+  }
+
+  inum newinum = markinum(rand(), createfile);
   // get a free inum
-  while(ec->get(newinum, buf) == extent_protocol::OK){
+  std::string temp;
+  while(ec->get(newinum, temp) == extent_protocol::OK){
     newinum = markinum(rand(), createfile);
   }
-  printf("ckeh:yfs_client::create: newinum:%lld\n", newinum);
+  printf("ckeh:yfs_client::create: parent:%lld, filename:%s, newinum:%lld\n", parent, name.c_str(), newinum);
   // put newinum
-  int ret = OK;
   if((ret = ec->put(newinum, "")) != extent_protocol::OK){
     printf("ckeh:yfs_client::create: error:%d\n", ret);
     lc->release(parent);
+    lc->release(newinum);
     return ret;
   }
-  ret = ec->get(parent, buf);
+  lc->release(newinum);
+
   printf("ckeh:yfs_client::create: parent data:%s\n", buf.c_str());
 
   buf += filename(newinum) + " " + name + " " ;
   if((ret = ec->put(parent, buf)) != extent_protocol::OK){
     printf("ckeh:yfs_client::create: error:%d\n", ret);
     lc->release(parent);
-
     return ret;
   }
   new_file = newinum;
@@ -210,25 +229,37 @@ int
 yfs_client::unlink(inum parent, std::string name){
   lc->acquire(parent);
 
-  std::vector<dirent> dirlist;
-  int ret;
-  
-  if((ret = readdir(parent, dirlist)) != OK){
-    lc->release(parent);
-    return ret;
-  }
-  std::string dirbuf;
+  std::string data;
   bool found = false;
-  for(dirent dirent : dirlist){
+  std::string dirbuf;
+
+  extent_protocol::status s = ec->get(parent, data);
+  if(s != extent_protocol::OK){
+    return s;
+  }
+  std::stringstream ss(data);
+  dirent dirent;
+
+  while(ss >> dirent.inum >> dirent.name){
+    // printf("ckeh:yfs_client::unlink: inum:%lld, name:%s\n", dirent.inum, dirent.name.c_str());
     if(dirent.name.compare(name) == 0){
+      if(isdir(dirent.inum)){
+        lc->release(parent);
+        return NOENT;
+      }
       lc->acquire(dirent.inum);
       ec->remove(dirent.inum);
       found = true;
       lc->release(dirent.inum);
       continue;
     }
+  
     dirbuf += filename(dirent.inum) + " " + dirent.name + " ";
   }
+  // if((ret = readdir(parent, dirlist)) != OK){
+  //   lc->release(parent);
+  //   return ret;
+  // }
   if(!found){
     lc->release(parent);
     return NOENT;
@@ -288,7 +319,7 @@ yfs_client::writefile(inum file, off_t offset, size_t size, std::string buf){
     return ret;
   }
   if(offset > (int) read.size()){
-    printf("ckeh:yfs_client::writefile: OFF > SIZE\n\toff-size:%ld\n\treadsize:%ld\n", offset-read.size(), read.size());
+    printf("ckeh:yfs_client::writefile: OFF > SIZE\n\toff-size:%ld\n\tre adsize:%ld\n", offset-read.size(), read.size());
     read.resize(offset, '\0');
     // read += (std::string('\0', offset-read.size()));
     printf("\n\treadsize after adding nulls:%ld\n", read.size());
@@ -300,7 +331,9 @@ yfs_client::writefile(inum file, off_t offset, size_t size, std::string buf){
   } else {
     std::string beg = read.substr(0, offset);
     beg += buf.substr(0, size);
-    beg += (read.size() > offset+size)? read.substr(offset+size): "";
+    if(read.size() > offset + size){
+      beg += read.substr(offset+size);
+    }
     next = beg;
   }
   ec->put(file, next);
