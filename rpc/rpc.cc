@@ -64,15 +64,18 @@
 #include "method_thread.h"
 #include "slock.h"
 
+#include <unistd.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <time.h>
 #include <netdb.h>
+#include <algorithm>
 
 #include "jsl_log.h"
 #include "gettime.h"
 #include "lang/verify.h"
+#include <climits>
 
 const rpcc::TO rpcc::to_max = { 120000 };
 const rpcc::TO rpcc::to_min = { 1000 };
@@ -662,8 +665,54 @@ rpcs::checkduplicate_and_update(unsigned int clt_nonce, unsigned int xid,
 {
 	ScopedLock rwl(&reply_window_m_);
 
+	jsl_log(JSL_DBG_3, "ckeh:rpcs::checkduplicate_and_update clt_nonce:%d, xid:%d, xid_rep:%d, b:%s, sz:%d\n", clt_nonce, xid, xid_rep, *b, *sz);
+	rpcs::rpcstate_t state = NEW;
+
+	std::list<reply_t>& replies = reply_window_[clt_nonce];
+
+
+	if(replies.size() != 0){
+		jsl_log(JSL_DBG_3, "ckeh:rpcs::checkduplicate_and_update replies at clt_nonce:%d\n", clt_nonce);
+	}
+
+	if(replies.size() != 0){
+		unsigned int min_xid = INT_MAX;
+		auto it = replies.begin();
+		while(it != replies.end()){
+			jsl_log(JSL_DBG_3, "\tr.xid:%d, r.buf:%s, r.cb_present:%d, sz:%d\n", it->xid, it->buf, it->cb_present, it->sz);
+
+			if(it->xid < xid_rep){
+				if(it->buf) free(it->buf);
+				it = replies.erase(it);
+				continue;
+			} 
+			if(it->xid == xid){
+				if(it->cb_present){
+					*b = it->buf;
+					*sz = it->sz;
+					jsl_log(JSL_DBG_3, "ckeh:rpcs::checkduplicate_and_update returing state:%d, b:%s, sz:%d\n", DONE, *b, *sz);
+					state = DONE;
+				} else {
+					jsl_log(JSL_DBG_3, "ckeh:rpcs::checkduplicate_and_update returing state:%d\n", INPROGRESS);
+					state = INPROGRESS;
+				}
+			}
+			min_xid = std::min(it->xid, min_xid);
+
+			it++;
+		}
+		if(xid < min_xid && min_xid != INT_MAX){
+			state = FORGOTTEN;
+		} 
+
+		if(state != NEW){
+			return state;
+		}
+	}
+	replies.push_back(reply_t(xid));
+	jsl_log(JSL_DBG_3, "ckeh:rpcs::checkduplicate_and_update returing state:%d\n", state);
         // You fill this in for Lab 1.
-	return NEW;
+	return state;
 }
 
 // rpcs::dispatch calls add_reply when it is sending a reply to an RPC,
@@ -675,7 +724,29 @@ void
 rpcs::add_reply(unsigned int clt_nonce, unsigned int xid,
 		char *b, int sz)
 {
+	jsl_log(JSL_DBG_3, "ckeh:rpcs::add_reply clt_nonce:%d, xid:%d, b:%s, sz:%d\n", clt_nonce, xid, b, sz);
+
 	ScopedLock rwl(&reply_window_m_);
+	std::list<reply_t>* replies = &reply_window_[clt_nonce];
+	if(replies->size() != 0)	jsl_log(JSL_DBG_3, "ckeh:rpcs::add_reply replies at clt_nonce:%d\n", clt_nonce);
+	for(reply_t& r : *replies){
+		jsl_log(JSL_DBG_3, "\tr.xid:%d, r.buf:%s, r.cb_present:%d, sz:%d\n", r.xid, r.buf, r.cb_present, r.sz);
+	}
+
+	std::list<reply_t>::iterator it = std::find_if(replies->begin(), replies->end(), [xid](reply_t& r){
+		return r.xid == xid;
+	});
+	
+	if(it != replies->end()){
+		jsl_log(JSL_DBG_2, "ckeh:rpcs::add_reply found entry! xid:%d\n", xid);
+
+		it->buf = b;
+		it->sz = sz;
+		it->cb_present = true;
+	} else {
+		jsl_log(JSL_DBG_2, "ckeh:rpcs::add_reply Unable to find entry!\n");
+	}
+
         // You fill this in for Lab 1.
 }
 
