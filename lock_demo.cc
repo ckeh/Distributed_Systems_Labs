@@ -3,15 +3,16 @@
 //
 
 #include "lock_protocol.h"
-#include "lock_client.h"
+// #include "lock_client.h"
 #include "rpc.h"
 #include <arpa/inet.h>
 #include <vector>
 #include <stdlib.h>
 #include <stdio.h>
+#include "lock_client_cache.h"
 
 std::string dst;
-lock_client *lc;
+lock_client_cache *lc;
 
 int
 main(int argc, char *argv[])
@@ -24,7 +25,7 @@ main(int argc, char *argv[])
   }
 
   dst = argv[1];
-  lc = new lock_client(dst);
+  lc = new lock_client_cache(dst);
   r = lc->stat(1);
   printf ("stat returned %d\n", r);
 }

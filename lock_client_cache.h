@@ -20,11 +20,36 @@ class lock_release_user {
 };
 
 class lock_client_cache : public lock_client {
+public:
+
+/*
+none: client knows nothing about this lock
+free: client owns the lock and no thread has it
+locked: client owns the lock and a thread has it
+acquiring: the client is acquiring ownership
+releasing: the client is releasing ownership
+*/
+  enum LOCK_STATE{
+    NONE,
+    FREE,
+    LOCKED,
+    ACQUIRING,
+    RELEASING
+  };
+
  private:
   class lock_release_user *lu;
   int rlock_port;
   std::string hostname;
   std::string id;
+  pthread_mutex_t state_lock;
+  pthread_cond_t retry;
+  pthread_cond_t owned;
+  volatile bool revoke_requested = false;
+  volatile int waiting = 0;
+  volatile int waiting_replay = 0;
+  std::map<lock_protocol::lockid_t, lock_client_cache::LOCK_STATE> lock_states;
+
  public:
   lock_client_cache(std::string xdst, class lock_release_user *l = 0);
   virtual ~lock_client_cache() {};
