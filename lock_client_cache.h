@@ -28,33 +28,44 @@ free: client owns the lock and no thread has it
 locked: client owns the lock and a thread has it
 acquiring: the client is acquiring ownership
 releasing: the client is releasing ownership
-*/
-  enum LOCK_STATE{
-    NONE,
-    FREE,
-    LOCKED,
-    ACQUIRING,
-    RELEASING
-  };
+*/  
+enum LOCK_STATE{
+      NONE,
+      FREE,
+      LOCKED,
+      ACQUIRING,
+      RELEASING
+};
+class lock_info{
+  public:
+  LOCK_STATE lock_state;
+  pthread_mutex_t lock;
+  pthread_cond_t retry;
+  volatile bool revoke_requested = false;
+  volatile int waiting = 0;
+  volatile int waiting_replay = 0;
 
+};
  private:
   class lock_release_user *lu;
   int rlock_port;
   std::string hostname;
   std::string id;
   pthread_mutex_t state_lock;
-  pthread_cond_t retry;
-  pthread_cond_t owned;
-  volatile bool revoke_requested = false;
-  volatile int waiting = 0;
-  volatile int waiting_replay = 0;
-  std::map<lock_protocol::lockid_t, lock_client_cache::LOCK_STATE> lock_states;
+  // pthread_cond_t retry;
+  // pthread_cond_t owned;
+  // volatile bool revoke_requested = false;
+  // volatile int waiting = 0;
+  // volatile int waiting_replay = 0;
+  std::map<lock_protocol::lockid_t, lock_client_cache::lock_info> locks;
 
  public:
   lock_client_cache(std::string xdst, class lock_release_user *l = 0);
   virtual ~lock_client_cache() {};
   lock_protocol::status acquire(lock_protocol::lockid_t);
   lock_protocol::status release(lock_protocol::lockid_t);
+  lock_protocol::status stat(lock_protocol::lockid_t);
+
   rlock_protocol::status revoke_handler(lock_protocol::lockid_t, 
                                         int &);
   rlock_protocol::status retry_handler(lock_protocol::lockid_t, 

@@ -23,73 +23,77 @@ lock_client_cache::lock_client_cache(std::string xdst,
   host << hname << ":" << rlsrpc->port();
   id = host.str();
   VERIFY(pthread_mutex_init(&state_lock, NULL) == 0);
-  VERIFY(pthread_cond_init(&retry, NULL) == 0);
-  VERIFY(pthread_cond_init(&owned, NULL) == 0);
+  // VERIFY(pthread_cond_init(&retry, NULL) == 0);
+  // VERIFY(pthread_mutex_init(&lock, NULL) == 0);
 }
 
 lock_protocol::status
 lock_client_cache::acquire(lock_protocol::lockid_t lid)
 {
   pthread_mutex_lock(&state_lock);
-  tprintf("ckeh:lock_client_cache::acquire client:%s thread:%ld, lid:%lld, lock_states[lid]:%d\n", id.c_str(), pthread_self(), lid, lock_states[lid]);
-
+  if(locks.find(lid) == locks.end()){
+    pthread_mutex_init(&locks[lid].lock, NULL);
+    pthread_cond_init(&locks[lid].retry, NULL);
+  }
+  tprintf("ckeh:lock_client_cache::acquire client:%s thread:%ld, lid:%lld, locks[lid]:%d\n", id.c_str(), pthread_self(), lid, locks[lid].lock_state);
+  lock_info &cur = locks[lid];
+  pthread_mutex_lock(&cur.lock);
+  pthread_mutex_unlock(&state_lock);
   int ret = lock_protocol::OK;
+
 retry:
-  switch(lock_states[lid]){
+  switch(cur.lock_state){
     case NONE:
-      lock_states[lid] = ACQUIRING;
+      cur.lock_state = ACQUIRING;
       int r;
-      pthread_mutex_unlock(&state_lock);
+      pthread_mutex_unlock(&cur.lock);
       if((ret = cl->call(lock_protocol::acquire, lid, id, r)) != lock_protocol::OK){
-        pthread_mutex_lock(&state_lock);
-        waiting_replay++;
-        while(lock_states[lid] != NONE){
-          pthread_cond_wait(&retry, &state_lock);
+        pthread_mutex_lock(&cur.lock);
+        cur.waiting_replay++;
+        while(cur.lock_state == ACQUIRING){
+          pthread_cond_wait(&cur.retry, &cur.lock);
         }
-        waiting_replay--;
+        cur.waiting_replay--;
         goto retry;
       }
-      pthread_mutex_lock(&state_lock);
-      lock_states[lid] = LOCKED;
-      break;
-    case FREE:
-      lock_states[lid] = LOCKED;
-      break;
-    case LOCKED:
-      waiting++;
-      while(lock_states[lid] != FREE){
-        pthread_cond_wait(&owned, &state_lock);
-      }
-      waiting--;
-      goto retry;
-      break;
-    case ACQUIRING:
-      waiting++;
-      while(lock_states[lid] != FREE){
-        pthread_cond_wait(&owned, &state_lock);
-      }
-      waiting--;
-      goto retry;
+      pthread_mutex_lock(&cur.lock);
+      cur.lock_state = LOCKED;
       break;
     case RELEASING:
-      pthread_mutex_unlock(&state_lock);
+      pthread_mutex_unlock(&cur.lock);
       // put yourself back onto waitlist
       if((ret = cl->call(lock_protocol::acquire, lid, id, r)) != lock_protocol::OK){
-        pthread_mutex_lock(&state_lock);
-        waiting_replay++;
-        while(lock_states[lid] != NONE){
-          pthread_cond_wait(&retry, &state_lock);
+        pthread_mutex_lock(&cur.lock);
+        cur.waiting_replay++;
+        while(cur.lock_state == RELEASING){
+          pthread_cond_wait(&cur.retry, &cur.lock);
         }
-        waiting_replay--;
+        cur.waiting_replay--;
+        goto retry;
       }
+      pthread_mutex_lock(&cur.lock);
+      cur.lock_state = LOCKED;
+
+      break;
+
+    case FREE:
+      cur.lock_state = LOCKED;
+      break;
+    case LOCKED:
+    case ACQUIRING:
+      cur.waiting++;
+      while(cur.lock_state != FREE){
+        pthread_cond_wait(&cur.retry, &cur.lock);
+      }
+      cur.waiting--;
       goto retry;
       break;
     default:
       break;
   }
-  tprintf("ckeh:lock_client_cache::acquire RETURNING client:%s thread:%ld, lid:%lld, lock_states[lid]:%d\n", id.c_str(), pthread_self(), lid, lock_states[lid]);
+  tprintf("ckeh:lock_client_cache::acquire RETURNING client:%s thread:%ld, lid:%lld, locks[lid]:%d\n", id.c_str(), pthread_self(), lid, locks[lid].lock_state);
 
-  pthread_mutex_unlock(&state_lock);
+  pthread_mutex_unlock(&cur.lock);
   return lock_protocol::OK;
 }
 
@@ -98,31 +102,35 @@ lock_client_cache::release(lock_protocol::lockid_t lid)
 {
 
   pthread_mutex_lock(&state_lock);
-  tprintf("ckeh:lock_client_cache::release client:%s thread:%ld, lid:%lld, lock_states[lid]:%d\n", id.c_str(), pthread_self(), lid, lock_states[lid]);
-  switch(lock_states[lid]){
+  tprintf("ckeh:lock_client_cache::release client:%s thread:%ld, lid:%lld, locks[lid]:%d\n", id.c_str(), pthread_self(), lid, locks[lid].lock_state);
+  lock_info &cur = locks[lid];
+  pthread_mutex_lock(&cur.lock);
+  pthread_mutex_unlock(&state_lock);
+
+  switch(cur.lock_state){
     // case NONE:
     //   break;
     // case FREE:
     //   break;
     case LOCKED:
-      if(revoke_requested && waiting == 0 && waiting_replay == 0){
-        tprintf("\tckeh:lock_client_cache::release DELAYED REVOKE client:%s thread:%ld, lid:%lld, lock_states[lid]:%d\n", id.c_str(), pthread_self(), lid, lock_states[lid]);
+      if(cur.revoke_requested && cur.waiting == 0 && cur.waiting_replay == 0){
+        tprintf("\tckeh:lock_client_cache::release DELAYED REVOKE client:%s thread:%ld, lid:%lld, locks[lid]:%d\n", id.c_str(), pthread_self(), lid, locks[lid].lock_state);
 
-        revoke_requested = false;
-        lock_states[lid] = RELEASING;
+        cur.revoke_requested = false;
+        cur.lock_state = RELEASING;
         int r;
-        pthread_mutex_unlock(&state_lock);
+        pthread_mutex_unlock(&cur.lock);
         lock_protocol::status retr = cl->call(lock_protocol::release, lid, id, r);
-        pthread_mutex_lock(&state_lock);
+        pthread_mutex_lock(&cur.lock);
 
-        if(retr == lock_protocol::OK){
-          lock_states[lid] = NONE;
+        if(retr == lock_protocol::OK && cur.lock_state == RELEASING){
+          cur.lock_state = NONE;
         }
       } else {
-        tprintf("\tckeh:lock_client_cache::release BROADCASTING client:%s thread:%ld, lid:%lld, lock_states[lid]:%d\n", id.c_str(), pthread_self(), lid, lock_states[lid]);
-        lock_states[lid] = FREE;
-        pthread_cond_broadcast(&owned);
-        pthread_cond_broadcast(&retry);        
+        tprintf("\tckeh:lock_client_cache::release BROADCASTING client:%s thread:%ld, lid:%lld, locks[lid]:%d\n", id.c_str(), pthread_self(), lid, locks[lid].lock_state);
+        cur.lock_state = FREE;
+        // pthread_cond_broadcast(&owned);
+        pthread_cond_broadcast(&cur.retry);        
       }
       break;
     // case ACQUIRING:
@@ -130,13 +138,13 @@ lock_client_cache::release(lock_protocol::lockid_t lid)
     // case RELEASING:
     //   break;
     default:
-      tprintf("\tckeh:lock_client_cache::release BAD STATE: client:%s thread:%ld, lid:%lld, lock_states[lid]:%d\n", id.c_str(), pthread_self(), lid, lock_states[lid]);
+      tprintf("\tckeh:lock_client_cache::release BAD STATE: client:%s thread:%ld, lid:%lld, locks[lid]:%d\n", id.c_str(), pthread_self(), lid, locks[lid].lock_state);
       break;
 
   }
 
-  pthread_mutex_unlock(&state_lock);
-  tprintf("\tckeh:lock_client_cache::release RETURNING: client:%s thread:%ld, lid:%lld, lock_states[lid]:%d\n", id.c_str(), pthread_self(), lid, lock_states[lid]);
+  pthread_mutex_unlock(&cur.lock);
+  tprintf("\tckeh:lock_client_cache::release RETURNING: client:%s thread:%ld, lid:%lld, locks[lid]:%d\n", id.c_str(), pthread_self(), lid, locks[lid].lock_state);
 
   return lock_protocol::OK;
 }
@@ -147,30 +155,33 @@ lock_client_cache::revoke_handler(lock_protocol::lockid_t lid,
 {
   pthread_mutex_lock(&state_lock);
 
-  tprintf("ckeh:lock_client_cache::revoke_handler client:%s thread:%ld, lid:%lld, lock_states[lid]:%d\n", id.c_str(), pthread_self(), lid, lock_states[lid]);
-  int ret = rlock_protocol::OK;
-  if(lock_states[lid] != FREE){
-    tprintf("\tckeh:lock_client_cache::revoke_handler FLAG REVOKE client:%s thread:%ld, lid:%lld, lock_states[lid]:%d\n", id.c_str(), pthread_self(), lid, lock_states[lid]);
+  tprintf("ckeh:lock_client_cache::revoke_handler client:%s thread:%ld, lid:%lld, locks[lid]:%d\n", id.c_str(), pthread_self(), lid, locks[lid].lock_state);
+  lock_info &cur = locks[lid];
+  pthread_mutex_lock(&cur.lock);
+  pthread_mutex_unlock(&state_lock);
 
-    revoke_requested = true;
+  int ret = rlock_protocol::OK;
+  if(cur.lock_state != FREE || cur.waiting > 0 || cur.waiting_replay > 0){
+    tprintf("\tckeh:lock_client_cache::revoke_handler FLAG REVOKE client:%s thread:%ld, lid:%lld, locks[lid]:%d\n", id.c_str(), pthread_self(), lid, locks[lid].lock_state);
+
+    cur.revoke_requested = true;
   } else {
-    tprintf("\tckeh:lock_client_cache::revoke_handler FREE TO RELEASE client:%s thread:%ld, lid:%lld, lock_states[lid]:%d\n", id.c_str(), pthread_self(), lid, lock_states[lid]);
+    tprintf("\tckeh:lock_client_cache::revoke_handler FREE TO RELEASE client:%s thread:%ld, lid:%lld, locks[lid]:%d\n", id.c_str(), pthread_self(), lid, locks[lid].lock_state);
 
     int r;
-    lock_states[lid] = RELEASING;
-    pthread_mutex_unlock(&state_lock);
+    cur.lock_state = RELEASING;
+    pthread_mutex_unlock(&cur.lock);
     lock_protocol::status retr = cl->call(lock_protocol::release, lid, id, r);
-    pthread_mutex_lock(&state_lock);
+    pthread_mutex_lock(&cur.lock);
 
-    tprintf("\t\tckeh:lock_client_cache::revoke_handler RETURNED FROM RELEASE client:%s thread:%ld, lid:%lld, lock_states[lid]:%d, retr:%d\n", id.c_str(), pthread_self(), lid, lock_states[lid], retr);
+    tprintf("\t\tckeh:lock_client_cache::revoke_handler RETURNED FROM RELEASE client:%s thread:%ld, lid:%lld, locks[lid]:%d, retr:%d\n", id.c_str(), pthread_self(), lid, locks[lid].lock_state, retr);
 
     VERIFY (retr == lock_protocol::OK);
-    if(retr == lock_protocol::OK){
-      lock_states[lid] = NONE;
-    }
+    cur.lock_state = (cur.lock_state == RELEASING)? NONE : cur.lock_state;
+
   }
-  pthread_mutex_unlock(&state_lock);
-  tprintf("\tckeh:lock_client_cache::revoke_handler RETURNING client:%s thread:%ld, lid:%lld, lock_states[lid]:%d\n", id.c_str(), pthread_self(), lid, lock_states[lid]);
+  pthread_mutex_unlock(&cur.lock);
+  tprintf("\tckeh:lock_client_cache::revoke_handler RETURNING client:%s thread:%ld, lid:%lld, locks[lid]:%d\n", id.c_str(), pthread_self(), lid, locks[lid].lock_state);
 
   return ret;
 }
@@ -179,44 +190,44 @@ rlock_protocol::status
 lock_client_cache::retry_handler(lock_protocol::lockid_t lid, 
                                  int &)
 {
-  tprintf("ckeh:lock_client_cache::retry_handler: client:%s thread:%ld lock_states[lid]:%d\n", id.c_str(), pthread_self(), lock_states[lid]);
   pthread_mutex_lock(&state_lock);
+  tprintf("ckeh:lock_client_cache::retry_handler: client:%s thread:%ld locks[lid]:%d\n", id.c_str(), pthread_self(), locks[lid].lock_state);
 
-  int ret = rlock_protocol::OK;
-  // int r;
-  // lock_states[lid] = ACQUIRING;
-  // pthread_mutex_unlock(&state_lock);
-  // lock_protocol::status retaq = cl->call(lock_protocol::acquire, lid, id, r);
-  // pthread_mutex_lock(&state_lock);
-  // if(retaq == lock_protocol::OK){
-    // lock_states[lid] = FREE;
-    // pthread_cond_broadcast(&owned);
-    if(lock_states[lid] == ACQUIRING){
-      lock_states[lid] = NONE;
-      pthread_cond_broadcast(&retry);
-      // pthread_cond_broadcast(&owned);
-
-      pthread_mutex_unlock(&state_lock);
-      return ret;
-    }
-    tprintf("ckeh:lock_client_cache::retry_handler: NUMBER OF THREADS waiting:%d, waiting_replay:%d, client:%s thread:%ld lock_states[lid]:%d\n", waiting, waiting_replay, id.c_str(), pthread_self(), lock_states[lid]);
-    if(waiting == 0 && waiting_replay == 0){
-      lock_states[lid] = NONE;
-      pthread_mutex_unlock(&state_lock);
-      return rlock_protocol::SKIP;
-    }
-    lock_states[lid] = NONE;
-    pthread_cond_broadcast(&retry);
-    pthread_cond_broadcast(&owned);
-  // } else if(retaq == lock_protocol::RETRY){
-    // shouldnt happen
-  // }
+  lock_info &cur = locks[lid];
+  pthread_mutex_lock(&cur.lock);
   pthread_mutex_unlock(&state_lock);
 
-  tprintf("ckeh:lock_client_cache::retry_handler: RETURNING client:%s thread:%ld lock_states[lid]:%d\n", id.c_str(), pthread_self(), lock_states[lid]);
+  int ret = rlock_protocol::OK;
+  if(cur.lock_state == ACQUIRING){
+    cur.lock_state = NONE;
+    pthread_cond_broadcast(&cur.retry);
+    // pthread_cond_broadcast(&owned);
+    pthread_mutex_unlock(&cur.lock);
+    return ret;
+  }
+  tprintf("ckeh:lock_client_cache::retry_handler: NUMBER OF THREADS waiting:%d, waiting_replay:%d, client:%s thread:%ld locks[lid]:%d\n", cur.waiting, cur.waiting_replay, id.c_str(), pthread_self(), locks[lid].lock_state);
+  if(cur.waiting == 0 && cur.waiting_replay == 0){
+    cur.lock_state = NONE;
+    pthread_mutex_unlock(&cur.lock);
+    return rlock_protocol::SKIP;
+  }
+  cur.lock_state = NONE;
+  pthread_cond_broadcast(&cur.retry);
+  // pthread_cond_broadcast(&owned);
+  pthread_mutex_unlock(&cur.lock);
+
+  tprintf("ckeh:lock_client_cache::retry_handler: RETURNING client:%s thread:%ld locks[lid]:%d\n", id.c_str(), pthread_self(), locks[lid].lock_state);
 
   return ret;
 }
 
 
 
+int
+lock_client_cache::stat(lock_protocol::lockid_t lid)
+{
+  int r;
+  lock_protocol::status ret = cl->call(lock_protocol::stat, cl->id(), lid, r);
+  VERIFY (ret == lock_protocol::OK);
+  return r;
+}

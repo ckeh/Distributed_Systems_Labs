@@ -16,7 +16,7 @@ yfs_client::yfs_client(std::string extent_dst, std::string lock_dst)
   srand(getpid());
 
   ec = new extent_client(extent_dst);
-  lc = new lock_client(lock_dst);
+  lc = new lock_client_cache(lock_dst);
 }
 
 yfs_client::inum
@@ -174,15 +174,16 @@ yfs_client::create(inum parent, std::string name, inum& new_file, bool createfil
   while(ec->get(newinum, temp) == extent_protocol::OK){
     newinum = markinum(rand(), createfile);
   }
+  // lc->acquire(newinum);
   printf("ckeh:yfs_client::create: parent:%lld, filename:%s, newinum:%lld\n", parent, name.c_str(), newinum);
   // put newinum
   if((ret = ec->put(newinum, "")) != extent_protocol::OK){
     printf("ckeh:yfs_client::create: error:%d\n", ret);
     lc->release(parent);
-    lc->release(newinum);
+    // lc->release(newinum);
     return ret;
   }
-  lc->release(newinum);
+  // lc->release(newinum);
 
   printf("ckeh:yfs_client::create: parent data:%s\n", buf.c_str());
 

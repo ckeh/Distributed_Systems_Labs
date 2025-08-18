@@ -13,11 +13,16 @@
 
 class lock_server_cache {
  private:
+  class slock_info {
+    public:
+      std::string owner;
+      std::deque<std::string> waitlist;
+      pthread_mutex_t lock;
+      volatile bool revoked = false;
+  };
   int nacquire;
-  std::map<lock_protocol::lockid_t, std::string> lock_to_owner;
-  std::map<lock_protocol::lockid_t, std::deque<std::string>> lock_to_waitlist;
+  std::map<lock_protocol::lockid_t, slock_info> slocks;
   pthread_mutex_t maplock;
-  pthread_cond_t torevoke;
  public:
   lock_server_cache();
   lock_protocol::status stat(lock_protocol::lockid_t, int &);
