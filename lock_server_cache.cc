@@ -61,9 +61,8 @@ int lock_server_cache::acquire(lock_protocol::lockid_t lid, std::string id,
   } else {
     tprintf("\tckeh:lock_server_cache::aquire: WAITING AND REVOKE client:%s, thread::%ld lid:%lld\n", id.c_str(), pthread_self(), lid);
     ret = lock_protocol::RETRY;
-    // if(std::find(lock_to_waitlist[lid].begin(), lock_to_waitlist[lid].end(), id) == lock_to_waitlist[lid].end()){
-      cur.waitlist.push_back(id);
-    // }
+    cur.waitlist.push_back(id);
+
     //found entry so another thread owns it 
     if(!cur.revoked){
       handle h(cur.owner);
